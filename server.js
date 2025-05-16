@@ -1,3 +1,33 @@
+// Add this near the top of your server.js
+const meetingPasswords = {}; // Store passwords in memory (for production, use a database)
+
+// Modify your 'join-room' event handler
+io.on('connection', (socket) => {
+  socket.on('join-room', (roomId, userId, password, callback) => {
+    if (meetingPasswords[roomId] && meetingPasswords[roomId] !== password) {
+      callback({ success: false, error: 'Incorrect password' });
+      return;
+    }
+    
+    socket.join(roomId);
+    callback({ success: true });
+    socket.to(roomId).emit('user-connected', userId);
+  });
+
+  // ... rest of your existing socket code
+});
+
+// Add endpoint to create protected rooms
+app.post('/create-room', (req, res) => {
+  const roomId = generateRoomId(); // Your existing room ID generation
+  const password = req.body.password;
+  
+  if (password) {
+    meetingPasswords[roomId] = password;
+  }
+  
+  res.json({ roomId });
+});
 const express = require("express");
 const app = express();
 const http = require("http").createServer(app);
