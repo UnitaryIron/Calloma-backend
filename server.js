@@ -29,3 +29,14 @@ io.on("connection", (socket) => {
 });
 
 http.listen(3002, () => console.log("Server running on http://localhost:3002"));
+
+app.post('/verify-recaptcha', async (req, res) => {
+  const { token } = req.body;
+  const secret = "6LdjuzwrAAAAAKEzOIT9wWNMFTMYypBk_S5pSGmn";
+  const response = await fetch(
+    `https://www.google.com/recaptcha/api/siteverify?secret=${secret}&response=${token}`,
+    { method: "POST" }
+  );
+  const data = await response.json();
+  res.send({ success: data.success });
+});
