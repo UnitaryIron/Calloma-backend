@@ -31,34 +31,64 @@ app.post('/create-room', (req, res) => {
 const express = require("express");
 const app = express();
 const http = require("http").createServer(app);
-const io = require("socket.io")(http);
+const io = require("socket.io")(http, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
 
-app.use(express.static(__dirname));
+const PORT = process.env.PORT || 3000;
+
+const users = {}; // Stores userId -> socket.id mapping
 
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log("A user connected:", socket.id);
 
-  socket.on("join-room", (roomId, userId) => {
-    socket.join(roomId);
-    socket.to(roomId).emit("user-connected", userId);
+  // Handle join event
+  socket.on("join", (userId) => {
+    if (!userId) {
+      console.log("Join attempt with no userId");
+      return;
+    }
 
-    socket.on("disconnect", () => {
-      socket.to(roomId).emit("user-disconnected", userId);
-    });
+    // Check if the userId is already taken
+    if (users[userId]) {
+      console.log(`User ID '${userId}' is already taken`);
+      socket.emit("user-id-taken");
+      return;
+    }
+
+    // Register user
+    users[userId] = socket.id;
+    socket.userId = userId; // Store userId in socket session
+
+    console.log(`User joined: ${userId} with socket ${socket.id}`);
+
+    // Notify the new user of all current users
+    socket.emit("user-list", Object.keys(users));
+
+    // Notify everyone else that a new user has joined
+    socket.broadcast.emit("new-user-joined", userId);
   });
 
-  // Relay WebRTC signals
-  socket.on("signal", (toId, signal) => {
-    io.to(toId).emit("signal", socket.id, signal);
-  });
-
-  // Chat messages
-  socket.on("chat-message", (roomId, msg) => {
-    socket.to(roomId).emit("chat-message", msg);
+  // Handle user disconnection
+  socket.on("disconnect", () => {
+    const userId = socket.userId;
+    if (userId && users[userId]) {
+      delete users[userId];
+      console.log(`User disconnected: ${userId}`);
+      socket.broadcast.emit("user-left", userId);
+    } else {
+      console.log(`Socket disconnected without userId: ${socket.id}`);
+    }
   });
 });
 
-http.listen(3002, () => console.log("Server running on http://localhost:3002"));
+http.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
+
 
 app.post('/verify-recaptcha', async (req, res) => {
   const { token } = req.body;
