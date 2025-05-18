@@ -1,33 +1,3 @@
-// Add this near the top of your server.js
-const meetingPasswords = {}; // Store passwords in memory (for production, use a database)
-
-// Modify your 'join-room' event handler
-io.on('connection', (socket) => {
-  socket.on('join-room', (roomId, userId, password, callback) => {
-    if (meetingPasswords[roomId] && meetingPasswords[roomId] !== password) {
-      callback({ success: false, error: 'Incorrect password' });
-      return;
-    }
-    
-    socket.join(roomId);
-    callback({ success: true });
-    socket.to(roomId).emit('user-connected', userId);
-  });
-
-  // ... rest of your existing socket code
-});
-
-// Add endpoint to create protected rooms
-app.post('/create-room', (req, res) => {
-  const roomId = generateRoomId(); // Your existing room ID generation
-  const password = req.body.password;
-  
-  if (password) {
-    meetingPasswords[roomId] = password;
-  }
-  
-  res.json({ roomId });
-});
 const express = require("express");
 const app = express();
 const http = require("http").createServer(app);
@@ -40,63 +10,129 @@ const io = require("socket.io")(http, {
 
 const PORT = process.env.PORT || 3000;
 
-const users = {}; // Stores userId -> socket.id mapping
+// Store room information
+const rooms = {}; // Format: { roomId: { users: [userId1, userId2], password: string } }
+const users = {}; // Format: { userId: { socketId: string, roomId: string } }
 
+// Middleware
+app.use(express.json());
+
+// Create a new room
+app.post('/create-room', (req, res) => {
+  const roomId = generateRoomId();
+  const { password } = req.body;
+  
+  rooms[roomId] = {
+    users: [],
+    password: password || null
+  };
+  
+  res.json({ roomId });
+});
+
+// Join room endpoint
+app.post('/join-room', (req, res) => {
+  const { roomId, password } = req.body;
+  
+  if (!rooms[roomId]) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  
+  if (rooms[roomId].password && rooms[roomId].password !== password) {
+    return res.status(401).json({ error: 'Incorrect password' });
+  }
+  
+  res.json({ success: true });
+});
+
+// Socket.io connection handler
 io.on("connection", (socket) => {
-  console.log("A user connected:", socket.id);
+  console.log("New connection:", socket.id);
 
-  // Handle join event
-  socket.on("join", (userId) => {
-    if (!userId) {
-      console.log("Join attempt with no userId");
-      return;
+  // Join room handler
+  socket.on("join-room", (roomId, userId, callback) => {
+    try {
+      // Validate input
+      if (!roomId || !userId) {
+        throw new Error('Room ID and User ID are required');
+      }
+
+      // Check if room exists
+      if (!rooms[roomId]) {
+        throw new Error('Room does not exist');
+      }
+
+      // Check if user already exists in any room
+      if (users[userId]) {
+        throw new Error('User ID already in use');
+      }
+
+      // Add user to room
+      socket.join(roomId);
+      rooms[roomId].users.push(userId);
+      users[userId] = {
+        socketId: socket.id,
+        roomId: roomId
+      };
+      socket.userId = userId;
+      socket.roomId = roomId;
+
+      // Notify others in the room
+      socket.to(roomId).emit("user-connected", userId);
+
+      // Send list of existing users to the new user
+      const otherUsers = rooms[roomId].users.filter(id => id !== userId);
+      callback({
+        success: true,
+        users: otherUsers
+      });
+
+      console.log(`User ${userId} joined room ${roomId}`);
+    } catch (error) {
+      console.error('Join room error:', error.message);
+      callback({
+        success: false,
+        error: error.message
+      });
     }
-
-    // Check if the userId is already taken
-    if (users[userId]) {
-      console.log(`User ID '${userId}' is already taken`);
-      socket.emit("user-id-taken");
-      return;
-    }
-
-    // Register user
-    users[userId] = socket.id;
-    socket.userId = userId; // Store userId in socket session
-
-    console.log(`User joined: ${userId} with socket ${socket.id}`);
-
-    // Notify the new user of all current users
-    socket.emit("user-list", Object.keys(users));
-
-    // Notify everyone else that a new user has joined
-    socket.broadcast.emit("new-user-joined", userId);
   });
 
-  // Handle user disconnection
+  // Relay WebRTC signaling
+  socket.on("signal", (targetUserId, signal) => {
+    const targetUser = users[targetUserId];
+    if (targetUser) {
+      io.to(targetUser.socketId).emit("signal", socket.userId, signal);
+    }
+  });
+
+  // Handle disconnection
   socket.on("disconnect", () => {
     const userId = socket.userId;
-    if (userId && users[userId]) {
+    const roomId = socket.roomId;
+    
+    if (userId && roomId) {
+      // Remove user from room
+      if (rooms[roomId]) {
+        rooms[roomId].users = rooms[roomId].users.filter(id => id !== userId);
+      }
+      
+      // Remove user from global list
       delete users[userId];
-      console.log(`User disconnected: ${userId}`);
-      socket.broadcast.emit("user-left", userId);
-    } else {
-      console.log(`Socket disconnected without userId: ${socket.id}`);
+      
+      // Notify room
+      socket.to(roomId).emit("user-disconnected", userId);
+      
+      console.log(`User ${userId} disconnected from room ${roomId}`);
     }
   });
 });
 
+// Helper function to generate room ID
+function generateRoomId() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// Start server
 http.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-});
-
-
-app.post('/verify-recaptcha', async (req, res) => {
-  const { token } = req.body;
-  const secret = "6LdjuzwrAAAAAKEzOIT9wWNMFTMYypBk_S5pSGmn";
-  const response = await fetch(
-    `https://www.google.com/recaptcha/api/siteverify?secret=${secret}&response=${token}`,
-    { method: "POST" }
-  );
-  const data = await response.json();
-  res.send({ success: data.success });
 });
